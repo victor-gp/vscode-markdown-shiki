@@ -3,6 +3,7 @@
 const vscode = require('vscode');
 const shiki = require('shiki');
 const path = require('path');
+const fs = require('fs');
 
 module.exports.activate = (context) => {
     vscode.workspace.onDidChangeConfiguration((change) => {
@@ -14,10 +15,10 @@ module.exports.activate = (context) => {
 
     // Default thems use `include` option that shiki doesn't support
     const defaultThemesMap = {
-        'Visual Studio Light': 'light_vs',
-        'Default Light+': 'light_plus',
-        'Visual Studio Dark': 'dark_vs',
-        'Default Dark+': 'dark_plus'
+        'Visual Studio Light': 'light-plus',
+        'Default Light+': 'light-plus',
+        'Visual Studio Dark': 'dark-plus',
+        'Default Dark+': 'dark-plus'
     }
 
     // Create mutable closure var that we can return to markdown-it but override at later points
@@ -33,30 +34,43 @@ module.exports.activate = (context) => {
         }
     }
 
-    function applyHighlighter() {
+    //TODO: why did we make the function async?
+    async function applyHighlighter() {
         const configTheme = vscode.workspace.getConfiguration('markdownShiki').get('theme');
         const currentThemeName = vscode.workspace.getConfiguration('workbench').get('colorTheme');
-        let theme = configTheme;
+        //TODO: what's the difference between themeName and themeData here? Why did we add the latter?
+        let themeName;
+        let themeData;
 
-        if (theme === null) {
-            if (defaultThemesMap[currentThemeName]) {
-                theme = defaultThemesMap[currentThemeName];
-            } else {
-                const colorThemePath = getCurrentThemePath(currentThemeName);
-                if (colorThemePath) {
-                    theme = shiki.loadTheme(colorThemePath);
-                    theme.name = 'random';// Shiki doesn't work without name and defaults to `Nord`
+        if (configTheme !== null) {
+            themeName = configTheme;
+        } else if (defaultThemesMap[currentThemeName]) {
+            themeName = defaultThemesMap[currentThemeName];
+        } else {
+            const colorThemePath = getCurrentThemePath(currentThemeName);
+            if (colorThemePath) {
+                try {
+                    themeData = JSON.parse(fs.readFileSync(colorThemePath, 'utf-8'));
+                    themeData.name = themeData.name || 'custom-theme';
+                    themeName = themeData.name;
+                } catch (e) {
+                    // noop
                 }
             }
         }
 
-        if (typeof theme === 'string') {
-            theme = shiki.getTheme(theme);
+        if (!themeName) {
+            themeName = 'dark-plus';
         }
 
-        theme.bg = ' '; // Don't set bg so that we use the preview's standard styling
+        console.log(themeData && themeData.fg)
 
-        shiki.getHighlighter({ theme }).then(highlighter => {
+        try {
+            const highlighter = await shiki.createHighlighter({
+                themes: themeData ? [themeData] : [themeName],
+                langs: Object.values(shiki.bundledLanguages),
+            });
+
             // The preview will already have been rendered at this point so refresh it
             vscode.commands.executeCommand('markdown.preview.refresh');
 
@@ -64,7 +78,11 @@ module.exports.activate = (context) => {
                 try {
                     const languageId = getLanguageId(lang);
                     if (languageId) {
-                        return highlighter.codeToHtml(code, languageId);
+                        let html = highlighter.codeToHtml(code, { lang: languageId, theme: themeName });
+                        //TODO: can't we do this like it was before, modifying the bg key in the theme data?
+                        // Don't set bg so that we use the preview's standard styling
+                        html = html.replace(/(<pre[^>]*?style="[^"]*?)background-color:[^;"]*(;?)/, '$1$2');
+                        return html;
                     }
                 } catch (err) {
                     // noop
@@ -73,8 +91,11 @@ module.exports.activate = (context) => {
                 // Fallback to default highligher
                 return defaultHighlight(code, lang);
             };
-        })
+        } catch (err) {
+            console.error('Failed to create Shiki highlighter:', err);
+        }
     }
+
     function getCurrentThemePath(themeName) {
         for (const ext of vscode.extensions.all) {
             const themes = ext.packageJSON.contributes && ext.packageJSON.contributes.themes;
@@ -96,6 +117,8 @@ function getLanguageId(inId) {
     return undefined;
 };
 
+//TODO: please explain the changes you made to this array.
+// should be the same content as here: https://github.com/microsoft/vscode-markdown-tm-grammar/blob/main/build.ts
 // Taken from https://github.com/Microsoft/vscode-markdown-tm-grammar/blob/master/build.js
 const languages = [
     { name: 'css', language: 'css', identifiers: ['css', 'css.erb'], source: 'source.css' },
@@ -112,11 +135,11 @@ const languages = [
     // syntax highlighting.
     { name: 'php', language: 'php', identifiers: ['php', 'php3', 'php4', 'php5', 'phpt', 'phtml', 'aw', 'ctp'], source: ['text.html.basic', 'source.php'] },
     { name: 'sql', language: 'sql', identifiers: ['sql', 'ddl', 'dml'], source: 'source.sql' },
-    { name: 'vs_net', language: 'vs_net', identifiers: ['vb'], source: 'source.asp.vb.net' },
+    { name: 'vs_net', language: 'vb', identifiers: ['vb'], source: 'source.asp.vb.net' },
     { name: 'xml', language: 'xml', identifiers: ['xml', 'xsd', 'tld', 'jsp', 'pt', 'cpt', 'dtml', 'rss', 'opml'], source: 'text.xml' },
     { name: 'xsl', language: 'xsl', identifiers: ['xsl', 'xslt'], source: 'text.xml.xsl' },
     { name: 'yaml', language: 'yaml', identifiers: ['yaml', 'yml'], source: 'source.yaml' },
-    { name: 'dosbatch', language: 'dosbatch', identifiers: ['bat', 'batch'], source: 'source.batchfile' },
+    { name: 'dosbatch', language: 'bat', identifiers: ['bat', 'batch'], source: 'source.batchfile' },
     { name: 'clojure', language: 'clojure', identifiers: ['clj', 'cljs', 'clojure'], source: 'source.clojure' },
     { name: 'coffee', language: 'coffee', identifiers: ['coffee', 'Cakefile', 'coffee.erb'], source: 'source.coffee' },
     { name: 'c', language: 'c', identifiers: ['c', 'h'], source: 'source.c' },
@@ -144,9 +167,9 @@ const languages = [
     { name: 'regexp_python', identifiers: ['re'], source: 'source.regexp.python' },
     { name: 'rust', language: 'rust', identifiers: ['rust', 'rs'], source: 'source.rust' },
     { name: 'scala', language: 'scala', identifiers: ['scala', 'sbt'], source: 'source.scala' },
-    { name: 'shell', language: 'shellscript', identifiers: ['shell', 'sh', 'bash', 'zsh', 'bashrc', 'bash_profile', 'bash_login', 'profile', 'bash_logout', '.textmate_init'], source: 'source.shell' },
+    { name: 'shell', language: 'bash', identifiers: ['shell', 'sh', 'bash', 'zsh', 'bashrc', 'bash_profile', 'bash_login', 'profile', 'bash_logout', '.textmate_init'], source: 'source.shell' },
     { name: 'ts', language: 'typescript', identifiers: ['typescript', 'ts'], source: 'source.ts' },
-    { name: 'tsx', language: 'typescriptreact', identifiers: ['tsx'], source: 'source.tsx' },
+    { name: 'tsx', language: 'tsx', identifiers: ['tsx'], source: 'source.tsx' },
     { name: 'csharp', language: 'csharp', identifiers: ['cs', 'csharp', 'c#'], source: 'source.cs' },
     { name: 'fsharp', language: 'fsharp', identifiers: ['fs', 'fsharp', 'f#'], source: 'source.fsharp' },
     { name: 'dart', language: 'dart', identifiers: ['dart'], source: 'source.dart' },
